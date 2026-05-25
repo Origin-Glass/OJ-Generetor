@@ -1,0 +1,86 @@
+llm:
+  api_base: "http://127.0.0.1:8080/v1"
+  api_key_env: "OPENAI_API_KEY"
+  model: "ojgen-qwen3-gguf"
+  temperature: 0.75
+  top_p: 0.9
+  max_tokens: 8192
+  timeout: 300
+
+generation:
+  total_per_level: 33
+  bonus_levels: [22,23,24,25,26,27,28,29,30]
+  language: "ko"
+  output_dir: "generated/problems"
+  metadata_dir: "generated/metadata"
+  max_revision_attempts: 3
+  verification_rounds: 5
+  same_level_unique_primary_tag_combo: true
+  multimodal_ready: true
+  text_only_first_version: true
+  generate_svg: true
+  generate_hidden_tests: true
+  seed: 20260525
+
+verification:
+  random_test_count_default: 100
+  llm_counterexample_count_default: 20
+  max_input_bytes: 200000
+  compile_timeout_sec: 20
+  run_timeout_sec: 3
+  high_difficulty_run_timeout_sec: 8
+  compare_reference_with_bruteforce: true
+  effort_by_level:
+    "1-5":
+      random_tests: 30
+      llm_counterexample_tests: 5
+      max_hidden_tests: 20
+      verifier_max_tokens: 4096
+    "6-10":
+      random_tests: 50
+      llm_counterexample_tests: 10
+      max_hidden_tests: 40
+      verifier_max_tokens: 6144
+    "11-15":
+      random_tests: 100
+      llm_counterexample_tests: 20
+      max_hidden_tests: 80
+      verifier_max_tokens: 8192
+    "16-20":
+      random_tests: 150
+      llm_counterexample_tests: 30
+      max_hidden_tests: 120
+      verifier_max_tokens: 10000
+    "21-25":
+      random_tests: 200
+      llm_counterexample_tests: 40
+      max_hidden_tests: 160
+      verifier_max_tokens: 12000
+    "26-30":
+      random_tests: 300
+      llm_counterexample_tests: 60
+      max_hidden_tests: 240
+      verifier_max_tokens: 16000
+
+similarity:
+  enabled: true
+  dataset_path: "data/boj_problems_indexed.jsonl"
+  max_allowed_jaccard: 0.35
+  title_exact_match_block: true
+  ngram_size: 5
+  require_dataset: false
+  sample_size: 50000
+
+git:
+  enabled: true
+  commit_each_problem: true
+  push_after_commit: true
+  remote: "origin"
+  branch: "main"
+  lock_ttl_minutes: 120
+  max_push_retries: 5
+
+github:
+  token_env: "GITHUB_TOKEN"
+  username_env: "GITHUB_USERNAME"
+  email_env: "GITHUB_EMAIL"

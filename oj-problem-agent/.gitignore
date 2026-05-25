@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+generated/metadata/plan.json
+generated/logs/*
+!generated/problems/.gitkeep
+!generated/metadata/.gitkeep
+!generated/locks/.gitkeep
+!generated/logs/.gitkeep
+!generated/retry_queue/.gitkeep

@@ -1,0 +1,5 @@
+pydantic
+requests
+python-dotenv
+PyYAML
+rich
