@@ -45,10 +45,20 @@ class GithubCommitter:
             return commit
         commit_hash = self.current_commit_hash()
         if self.config.git.push_after_commit:
-            push = self.push()
+            push = self.push_with_retries()
             if not push.ok:
                 return push
         return GitResult(True, commit.stdout, commit.stderr, commit_hash=commit_hash)
+
+    def push_with_retries(self) -> GitResult:
+        last = GitResult(False, "", "push not attempted")
+        for attempt in range(1, self.config.git.max_push_retries + 1):
+            last = self.push()
+            if last.ok:
+                return last
+            if attempt < self.config.git.max_push_retries:
+                self.pull_rebase()
+        return last
 
     def push(self) -> GitResult:
         remote = self.config.git.remote
@@ -96,8 +106,14 @@ class GithubCommitter:
             )
         except FileNotFoundError as exc:
             return GitResult(False, "", str(exc))
-        stdout = completed.stdout.replace(os.getenv(self.config.github.token_env, "__none__"), "***TOKEN***")
-        stderr = completed.stderr.replace(os.getenv(self.config.github.token_env, "__none__"), "***TOKEN***")
+        stdout = self._redact(completed.stdout)
+        stderr = self._redact(completed.stderr)
         if completed.returncode != 0:
             stderr = f"{stderr}\ncommand: {' '.join(display_args)}"
         return GitResult(completed.returncode == 0, stdout, stderr)
+
+    def _redact(self, text: str) -> str:
+        token = os.getenv(self.config.github.token_env, "")
+        if not token:
+            return text
+        return text.replace(token, "***TOKEN***")

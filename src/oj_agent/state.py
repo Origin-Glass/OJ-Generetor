@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import AgentState, TaskSlot, dump_model, utc_now_iso
-from .utils import read_json, write_json
+from .utils import read_json, worker_id, write_json
 
 
 class StateStore:
@@ -43,17 +44,26 @@ class StateStore:
                 except Exception:
                     continue
                 slot_id = lock.get("slot_id")
-                if slot_id:
+                if slot_id and not self._is_expired_lock(lock):
                     state.active_locks[slot_id] = lock
 
     def next_available_slot(self, slots: list[TaskSlot], state: AgentState, levels: set[int] | None = None) -> TaskSlot | None:
         completed = set(state.completed_slots)
         failed = set(state.failed_slots)
-        locked = set(state.active_locks)
+        current_worker_id = worker_id()
         for slot in slots:
             if levels and slot.level not in levels:
                 continue
-            if slot.slot_id in completed or slot.slot_id in failed or slot.slot_id in locked:
+            lock = state.active_locks.get(slot.slot_id)
+            locked_by_other = lock is not None and lock.get("worker_id") != current_worker_id
+            if slot.slot_id in completed or slot.slot_id in failed or locked_by_other:
                 continue
             return slot
         return None
+
+    def _is_expired_lock(self, lock: dict) -> bool:
+        try:
+            expires_at = datetime.fromisoformat(str(lock["expires_at"]))
+        except Exception:
+            return True
+        return expires_at < datetime.now(timezone.utc)

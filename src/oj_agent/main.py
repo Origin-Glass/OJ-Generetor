@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import tempfile
 import json
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from .similarity import SimilarityChecker
 from .state import StateStore
 from .tag_planner import TagPlanner
 from .task_planner import TaskPlanner, level_to_tier
-from .utils import ensure_dir, slugify, stable_hash, write_json
+from .utils import ensure_dir, read_json, slugify, stable_hash, write_json
 from .verifier import ProblemVerifier
 
 console = Console()
@@ -85,6 +86,9 @@ def cmd_generate_one(config: AppConfig, level: int, tags: str | None, force: boo
     if dry_run:
         console.print_json(json.dumps(dump_model(slot), ensure_ascii=False))
         return
+    lock = DistributedLockManager(config, GithubCommitter(config)).claim(slot)
+    if lock is None:
+        raise RuntimeError(f"Could not claim {slot.slot_id}")
     run_slot(config, slot, force=force)
 
 
@@ -125,6 +129,29 @@ def cmd_validate_all(config: AppConfig) -> None:
             console.print(path)
         raise SystemExit(1)
     console.print("Validation passed.")
+
+
+def cmd_smoke_test(config: AppConfig) -> None:
+    with tempfile.TemporaryDirectory(prefix="oj-agent-smoke-") as tmp:
+        smoke = _clone_config(config)
+        smoke.project_root = Path(tmp)
+        smoke.llm = _clone_model(smoke.llm, api_base="fake://fixture", api_key_env="OPENAI_API_KEY", model="fake-oj-model")
+        smoke.git = _clone_model(smoke.git, enabled=False, push_after_commit=False)
+        smoke.similarity = _clone_model(smoke.similarity, enabled=False, require_dataset=False)
+        slot = TaskSlot(
+            slot_id="L01-001",
+            level=1,
+            tier=level_to_tier(1),
+            index=1,
+            bonus=False,
+            tags=["implementation"],
+        )
+        if not run_slot(smoke, slot):
+            raise RuntimeError("fake LLM smoke test failed")
+        expected = smoke.project_root / smoke.generation.output_dir / "level_01" / "L01-001_quiet-sum" / "problem.md"
+        if not expected.exists():
+            raise RuntimeError(f"smoke output missing: {expected}")
+        console.print("Smoke test passed with fake LLM.")
 
 
 def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
@@ -173,8 +200,16 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
                 similarity_score=similarity_score,
             )
             saved = save_problem_bundle(output_root, problem, metadata, dump_model(report), answer)
-            lock_path = lock_manager.release(slot.slot_id)
-            paths = saved.files + ([lock_path] if lock_path else [])
+            state = state_store.load(slots)
+            if slot.slot_id not in state.completed_slots:
+                state.completed_slots.append(slot.slot_id)
+            state.active_locks.pop(slot.slot_id, None)
+            state.commit_history.append({"slot_id": slot.slot_id, "commit": None, "time": utc_now_iso()})
+            state_store.save(state)
+            lock_path = lock_manager.lock_path(slot.slot_id)
+            lock_data = read_json(lock_path, None) if lock_path.exists() else None
+            removed_lock_path = lock_manager.release(slot.slot_id)
+            paths = saved.files + [state_store.path] + ([removed_lock_path] if removed_lock_path else [])
             commit = committer.add_commit_push(
                 paths,
                 f"add problem {slot.slot_id}: {problem.title}",
@@ -186,13 +221,13 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
                     f"generated files: {len(saved.files)}",
                 ],
             )
-            metadata.git_commit_hash = commit.commit_hash
-            state = state_store.load(slots)
-            if slot.slot_id not in state.completed_slots:
-                state.completed_slots.append(slot.slot_id)
-            state.active_locks.pop(slot.slot_id, None)
-            state.commit_history.append({"slot_id": slot.slot_id, "commit": commit.commit_hash, "time": utc_now_iso()})
-            state_store.save(state)
+            if not commit.ok:
+                if lock_data is not None:
+                    write_json(lock_path, lock_data)
+                state.completed_slots = [item for item in state.completed_slots if item != slot.slot_id]
+                state.commit_history = [item for item in state.commit_history if item.get("slot_id") != slot.slot_id]
+                state_store.save(state)
+                raise RuntimeError(f"failed to commit accepted problem {slot.slot_id}: {commit.stderr}")
             return True
         all_issues = [issue for round_result in report.rounds for issue in round_result.issues]
         if attempt < config.generation.max_revision_attempts:
@@ -210,9 +245,6 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
             "updated_at": utc_now_iso(),
         },
     )
-    lock_path = lock_manager.release(slot.slot_id)
-    paths = [retry_path] + ([lock_path] if lock_path else [])
-    committer.add_commit_push(paths, f"queue retry {slot.slot_id}", [f"level: {slot.level}", f"tags: {', '.join(slot.tags)}"])
     state = state_store.load(slots)
     if slot.slot_id not in state.failed_slots:
         state.failed_slots.append(slot.slot_id)
@@ -220,6 +252,18 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
         state.retry_queue.append(slot.slot_id)
     state.active_locks.pop(slot.slot_id, None)
     state_store.save(state)
+    lock_path = lock_manager.lock_path(slot.slot_id)
+    lock_data = read_json(lock_path, None) if lock_path.exists() else None
+    removed_lock_path = lock_manager.release(slot.slot_id)
+    paths = [retry_path, state_store.path] + ([removed_lock_path] if removed_lock_path else [])
+    commit = committer.add_commit_push(paths, f"queue retry {slot.slot_id}", [f"level: {slot.level}", f"tags: {', '.join(slot.tags)}"])
+    if not commit.ok:
+        if lock_data is not None:
+            write_json(lock_path, lock_data)
+        state.failed_slots = [item for item in state.failed_slots if item != slot.slot_id]
+        state.retry_queue = [item for item in state.retry_queue if item != slot.slot_id]
+        state_store.save(state)
+        raise RuntimeError(f"failed to commit retry queue for {slot.slot_id}: {commit.stderr}")
     return False
 
 
@@ -227,6 +271,18 @@ def parse_levels(text: str | None) -> set[int] | None:
     if not text:
         return None
     return {int(part.strip()) for part in text.split(",") if part.strip()}
+
+
+def _clone_config(config: AppConfig) -> AppConfig:
+    if hasattr(config, "model_copy"):
+        return config.model_copy(deep=True)
+    return config.copy(deep=True)
+
+
+def _clone_model(obj, **updates):
+    if hasattr(obj, "model_copy"):
+        return obj.model_copy(update=updates)
+    return obj.copy(update=updates)
 
 
 def main() -> None:
@@ -248,6 +304,7 @@ def main() -> None:
     sub.add_parser("resume")
     sub.add_parser("retry-failed")
     sub.add_parser("validate-all")
+    sub.add_parser("smoke-test")
     args = parser.parse_args()
     config = load_config(args.config)
     try:
@@ -265,6 +322,8 @@ def main() -> None:
             cmd_generate(config, None, None)
         elif args.command == "validate-all":
             cmd_validate_all(config)
+        elif args.command == "smoke-test":
+            cmd_smoke_test(config)
     except Exception:
         if args.debug:
             raise

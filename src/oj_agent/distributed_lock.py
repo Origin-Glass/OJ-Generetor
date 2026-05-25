@@ -21,6 +21,9 @@ class DistributedLockManager:
         self.committer.pull_rebase()
         path = self.lock_path(slot.slot_id)
         if path.exists() and not self.is_expired(path):
+            existing = read_json(path, {})
+            if existing.get("worker_id") == worker_id():
+                return LockRecord(**existing)
             return None
         now = datetime.now(timezone.utc).replace(microsecond=0)
         lock = LockRecord(
@@ -47,6 +50,7 @@ class DistributedLockManager:
         return None
 
     def lock_path(self, slot_id: str) -> Path:
+        self.lock_dir.mkdir(parents=True, exist_ok=True)
         return self.lock_dir / f"{slot_id}.lock.json"
 
     def is_expired(self, path: Path) -> bool:
