@@ -75,13 +75,25 @@ class LLMClient:
         *,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        json_schema: dict[str, Any] | None = None,
+        schema_name: str = "response",
     ) -> dict[str, Any]:
+        response_format = {"type": "json_object"}
+        if json_schema is not None:
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "schema": json_schema,
+                    "strict": True,
+                },
+            }
         try:
             text = self.chat(
                 messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                response_format={"type": "json_object"},
+                response_format=response_format,
             )
         except RuntimeError as exc:
             if "400" not in str(exc) and "response_format" not in str(exc):
@@ -97,6 +109,7 @@ class LLMClient:
                 ],
                 temperature=0.0,
                 max_tokens=max_tokens,
+                response_format=response_format,
             )
             return extract_json_object(repaired)
 

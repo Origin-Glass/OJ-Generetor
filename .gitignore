@@ -3,8 +3,12 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-generated/metadata/plan.json
+generated/debug_failed/*
+generated/locks/*
 generated/logs/*
+generated/metadata/*
+generated/problems/*
+generated/retry_queue/*
 !generated/problems/.gitkeep
 !generated/metadata/.gitkeep
 !generated/locks/.gitkeep

@@ -24,6 +24,13 @@ class StateStore:
         state.last_updated = utc_now_iso()
         write_json(self.path, dump_model(state))
 
+    def rotate_retry_slot_to_back(self, state: AgentState, slot_id: str) -> None:
+        """Avoid retry-failed starvation by moving a failed retry to the queue tail."""
+        remaining = [item for item in state.retry_queue if item != slot_id]
+        if slot_id in state.retry_queue:
+            remaining.append(slot_id)
+        state.retry_queue = remaining
+
     def _recover_from_files(self, state: AgentState) -> None:
         root = self.metadata_dir.parent
         problems_root = root / "problems"
@@ -47,10 +54,29 @@ class StateStore:
                 if slot_id and not self._is_expired_lock(lock):
                     state.active_locks[slot_id] = lock
 
-    def next_available_slot(self, slots: list[TaskSlot], state: AgentState, levels: set[int] | None = None) -> TaskSlot | None:
+    def next_available_slot(
+        self,
+        slots: list[TaskSlot],
+        state: AgentState,
+        levels: set[int] | None = None,
+        retry_failed: bool = False,
+    ) -> TaskSlot | None:
         completed = set(state.completed_slots)
         failed = set(state.failed_slots)
         current_worker_id = worker_id()
+        slot_by_id = {slot.slot_id: slot for slot in slots}
+        if retry_failed:
+            for slot_id in state.retry_queue:
+                slot = slot_by_id.get(slot_id)
+                if slot is None:
+                    continue
+                if levels and slot.level not in levels:
+                    continue
+                lock = state.active_locks.get(slot.slot_id)
+                locked_by_other = lock is not None and lock.get("worker_id") != current_worker_id
+                if slot.slot_id in completed or locked_by_other:
+                    continue
+                return slot
         for slot in slots:
             if levels and slot.level not in levels:
                 continue

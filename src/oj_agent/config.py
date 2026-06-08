@@ -53,6 +53,7 @@ class VerificationConfig(BaseModel):
     run_timeout_sec: int = 3
     high_difficulty_run_timeout_sec: int = 8
     compare_reference_with_bruteforce: bool = True
+    llm_review_min_level: int = 6
     effort_by_level: dict[str, VerificationEffort] = Field(default_factory=dict)
 
     def effort_for_level(self, level: int) -> VerificationEffort:

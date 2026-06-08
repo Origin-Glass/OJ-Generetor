@@ -3,6 +3,7 @@ from __future__ import annotations
 from .code_runner import CodeRunner
 from .config import AppConfig
 from .counterexample import CounterexampleSearcher
+from .diversity import diversity_issues
 from .llm_client import LLMClient
 from .models import ChatMessage, GeneratedProblem, LLMReview, RoundResult, TaskSlot, VerificationReport, dump_model
 from .prompts import final_review_prompt, verifier_prompt
@@ -26,6 +27,17 @@ class ProblemVerifier:
         report.rounds.append(round1)
         if round1.verdict != "ACCEPT":
             report.final_verdict = round1.verdict
+            return report
+
+        if slot.level < self.config.verification.llm_review_min_level:
+            round3 = self._round3(problem, slot, effort.max_hidden_tests)
+            report.rounds.append(round3)
+            report.final_verdict = round3.verdict
+            report.summary = (
+                "low-level deterministic verification completed"
+                if round3.verdict == "ACCEPT"
+                else "low-level deterministic verification requested changes"
+            )
             return report
 
         review = self._review(problem, slot, effort.verifier_max_tokens)
@@ -54,6 +66,8 @@ class ProblemVerifier:
             ],
             temperature=0.2,
             max_tokens=effort.verifier_max_tokens,
+            json_schema=LLMReview.model_json_schema(),
+            schema_name="LLMReview",
         )
         final_review = LLMReview(**final_data)
         round5 = RoundResult(round=5, name="Final review and answer authorization", verdict=final_review.verdict, issues=final_review.issues, data=dump_model(final_review))
@@ -91,12 +105,11 @@ class ProblemVerifier:
             issues.append("samples are missing")
         if not problem.constraints:
             issues.append("constraints are missing")
-        if not problem.brute_force_solution_python.strip():
-            issues.append("Python brute force is missing")
         if "```" in problem.problem_statement:
             issues.append("problem statement contains markdown fence")
         if problem.requires_diagram and not is_valid_svg(problem.diagram_svg):
             issues.append("diagram_svg is not valid SVG")
+        issues.extend(diversity_issues(problem, slot))
         sim = self.similarity.check(problem.title, problem.problem_statement)
         if sim.blocked:
             issues.append(f"similarity blocked: {sim.reason} score={sim.score:.3f}")
@@ -116,6 +129,8 @@ class ProblemVerifier:
             ],
             temperature=0.2,
             max_tokens=max_tokens,
+            json_schema=LLMReview.model_json_schema(),
+            schema_name="LLMReview",
         )
         return LLMReview(**data)
 

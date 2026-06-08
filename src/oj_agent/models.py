@@ -42,6 +42,8 @@ class TaskSlot(BaseModel):
     index: int
     bonus: bool
     tags: list[str] = Field(default_factory=list)
+    topic_hint: str = ""
+    avoid_topics: list[str] = Field(default_factory=list)
 
 
 class SampleCase(BaseModel):

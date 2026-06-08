@@ -17,5 +17,7 @@ class AnswerWriter:
             ],
             temperature=0.2,
             max_tokens=max_tokens,
+            json_schema=AnswerContent.model_json_schema(),
+            schema_name="AnswerContent",
         )
         return AnswerContent(**data).markdown_content

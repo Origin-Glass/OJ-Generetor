@@ -15,7 +15,9 @@ class CounterexampleSearcher:
                 ChatMessage(role="system", content="You generate adversarial tests for OJ problems. JSON only."),
                 ChatMessage(role="user", content=counterexample_prompt(problem, slot, count)),
             ],
-            temperature=0.5,
+            temperature=0.2,
             max_tokens=max_tokens,
+            json_schema=CounterexamplePlan.model_json_schema(),
+            schema_name="CounterexamplePlan",
         )
         return CounterexamplePlan(**data)

@@ -21,6 +21,7 @@ from .similarity import SimilarityChecker
 from .state import StateStore
 from .tag_planner import TagPlanner
 from .task_planner import TaskPlanner, level_to_tier
+from .templates import template_problem_for_slot
 from .utils import ensure_dir, read_json, slugify, stable_hash, write_json
 from .verifier import ProblemVerifier
 
@@ -92,7 +93,12 @@ def cmd_generate_one(config: AppConfig, level: int, tags: str | None, force: boo
     run_slot(config, slot, force=force)
 
 
-def cmd_generate(config: AppConfig, max_problems: int | None, levels: set[int] | None) -> None:
+def cmd_generate(
+    config: AppConfig,
+    max_problems: int | None = None,
+    levels: set[int] | None = None,
+    retry_failed: bool = False,
+) -> None:
     committer = GithubCommitter(config)
     committer.configure_identity()
     slots = build_slots(config)
@@ -101,7 +107,7 @@ def cmd_generate(config: AppConfig, max_problems: int | None, levels: set[int] |
     while max_problems is None or count < max_problems:
         committer.pull_rebase()
         state = state_store.load(slots)
-        slot = state_store.next_available_slot(slots, state, levels)
+        slot = state_store.next_available_slot(slots, state, levels, retry_failed=retry_failed)
         if slot is None:
             console.print("No available slots.")
             break
@@ -109,10 +115,85 @@ def cmd_generate(config: AppConfig, max_problems: int | None, levels: set[int] |
         if lock is None:
             console.print(f"Could not claim {slot.slot_id}; trying next refresh.")
             continue
-        accepted = run_slot(config, slot)
+        try:
+            accepted = run_slot(config, slot)
+        except Exception as exc:
+            queue_crashed_slot(config, slot, slots, exc)
+            accepted = False
         count += 1
         if not accepted:
+            if retry_failed:
+                state = state_store.load(slots)
+                state_store.rotate_retry_slot_to_back(state, slot.slot_id)
+                state_store.save(state)
             console.print(f"{slot.slot_id} queued for retry.")
+
+
+def queue_crashed_slot(config: AppConfig, slot: TaskSlot, slots: list[TaskSlot], exc: Exception) -> None:
+    """Quarantine a single bad slot so a long resume run keeps making progress."""
+    retry_dir = config.project_root / "generated" / "retry_queue"
+    debug_dir = config.project_root / "generated" / "debug_failed"
+    metadata_dir = config.project_root / config.generation.metadata_dir
+    ensure_dir(retry_dir)
+    ensure_dir(debug_dir)
+    issue = f"exception: {type(exc).__name__}: {exc}"
+    write_json(
+        retry_dir / f"{slot.slot_id}.json",
+        {
+            "slot_id": slot.slot_id,
+            "level": slot.level,
+            "tags": slot.tags,
+            "issues": [issue],
+            "updated_at": utc_now_iso(),
+        },
+    )
+    write_json(
+        debug_dir / f"{slot.slot_id}.exception.json",
+        {
+            "slot_id": slot.slot_id,
+            "level": slot.level,
+            "tags": slot.tags,
+            "exception_type": type(exc).__name__,
+            "exception": str(exc),
+            "updated_at": utc_now_iso(),
+        },
+    )
+    state_store = StateStore(metadata_dir)
+    state = state_store.load(slots)
+    if slot.slot_id not in state.failed_slots:
+        state.failed_slots.append(slot.slot_id)
+    if slot.slot_id not in state.retry_queue:
+        state.retry_queue.append(slot.slot_id)
+    state.active_locks.pop(slot.slot_id, None)
+    state_store.save(state)
+    DistributedLockManager(config, GithubCommitter(config)).release(slot.slot_id)
+
+
+def should_regenerate_after_issues(issues: list[str], attempt: int = 0) -> bool:
+    """Choose fresh generation when revision is likely to preserve a bad core idea."""
+    text = "\n".join(str(issue).lower() for issue in issues)
+    immediate_markers = [
+        "two-number sum",
+        "a+b",
+        "두 수의 합",
+        "degenerates",
+        "no valid json",
+        "invalid json",
+        "produced invalid json",
+        "field required",
+    ]
+    if any(marker in text for marker in immediate_markers):
+        return True
+    repeated_execution_markers = [
+        "c++17 compilation failed",
+        "sample 1 mismatch",
+        "sample 2 mismatch",
+        "sample 3 mismatch",
+        "runtime error",
+    ]
+    if attempt >= 1 and any(marker in text for marker in repeated_execution_markers):
+        return True
+    return False
 
 
 def cmd_validate_all(config: AppConfig) -> None:
@@ -148,7 +229,7 @@ def cmd_smoke_test(config: AppConfig) -> None:
         )
         if not run_slot(smoke, slot):
             raise RuntimeError("fake LLM smoke test failed")
-        expected = smoke.project_root / smoke.generation.output_dir / "level_01" / "L01-001_quiet-sum" / "problem.md"
+        expected = smoke.project_root / smoke.generation.output_dir / "level_01" / "L01-001_signal-compare-l01-001" / "problem.md"
         if not expected.exists():
             raise RuntimeError(f"smoke output missing: {expected}")
         console.print("Smoke test passed with fake LLM.")
@@ -175,7 +256,12 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
         console.print(f"{slot.slot_id} already exists; skipping.")
         return True
 
-    problem = generator.generate(slot, max_tokens=config.llm.max_tokens)
+    try:
+        problem = generator.generate(slot, max_tokens=config.llm.max_tokens)
+    except Exception:
+        if slot.level > 5:
+            raise
+        problem = template_problem_for_slot(slot)
     all_issues: list[str] = []
     report = None
     for attempt in range(config.generation.max_revision_attempts + 1):
@@ -203,6 +289,8 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
             state = state_store.load(slots)
             if slot.slot_id not in state.completed_slots:
                 state.completed_slots.append(slot.slot_id)
+            state.failed_slots = [item for item in state.failed_slots if item != slot.slot_id]
+            state.retry_queue = [item for item in state.retry_queue if item != slot.slot_id]
             state.active_locks.pop(slot.slot_id, None)
             state.commit_history.append({"slot_id": slot.slot_id, "commit": None, "time": utc_now_iso()})
             state_store.save(state)
@@ -231,9 +319,29 @@ def run_slot(config: AppConfig, slot: TaskSlot, force: bool = False) -> bool:
             return True
         all_issues = [issue for round_result in report.rounds for issue in round_result.issues]
         if attempt < config.generation.max_revision_attempts:
-            problem = reviser.revise(problem, slot, all_issues, config.verification.effort_for_level(slot.level).verifier_max_tokens)
+            if slot.level <= 5 and attempt >= max(config.generation.max_revision_attempts - 1, 1):
+                problem = template_problem_for_slot(slot)
+                continue
+            if should_regenerate_after_issues(all_issues, attempt=attempt):
+                if slot.level <= 5 and attempt >= 1:
+                    problem = template_problem_for_slot(slot)
+                else:
+                    problem = generator.generate(slot, max_tokens=config.llm.max_tokens)
+                continue
+            try:
+                problem = reviser.revise(problem, slot, all_issues, config.verification.effort_for_level(slot.level).verifier_max_tokens)
+            except Exception:
+                if slot.level <= 5:
+                    problem = template_problem_for_slot(slot)
+                else:
+                    problem = generator.generate(slot, max_tokens=config.llm.max_tokens)
 
     retry_dir = config.project_root / "generated" / "retry_queue"
+    debug_dir = config.project_root / "generated" / "debug_failed"
+    ensure_dir(debug_dir)
+    write_json(debug_dir / f"{slot.slot_id}.problem.json", dump_model(problem))
+    if report is not None:
+        write_json(debug_dir / f"{slot.slot_id}.verification.json", dump_model(report))
     retry_path = retry_dir / f"{slot.slot_id}.json"
     write_json(
         retry_path,
@@ -318,8 +426,10 @@ def main() -> None:
             cmd_generate_one(config, args.level, args.tags, args.force)
         elif args.command == "dry-run-one":
             cmd_generate_one(config, args.level, None, dry_run=True)
-        elif args.command in {"resume", "retry-failed"}:
+        elif args.command == "resume":
             cmd_generate(config, None, None)
+        elif args.command == "retry-failed":
+            cmd_generate(config, None, None, retry_failed=True)
         elif args.command == "validate-all":
             cmd_validate_all(config)
         elif args.command == "smoke-test":

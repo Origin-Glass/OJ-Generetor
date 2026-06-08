@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from itertools import combinations
 
+from .diversity import apply_diversity_to_slot
 from .models import TaskSlot
 
 
@@ -180,17 +181,24 @@ class TagPlanner:
         updated: list[TaskSlot] = []
         for slot in slots:
             if hasattr(slot, "model_copy"):
-                updated.append(slot.model_copy(update={"tags": assignments[slot.slot_id]}))
+                with_tags = slot.model_copy(update={"tags": assignments[slot.slot_id]})
             else:
-                updated.append(slot.copy(update={"tags": assignments[slot.slot_id]}))
+                with_tags = slot.copy(update={"tags": assignments[slot.slot_id]})
+            updated.append(apply_diversity_to_slot(with_tags))
         return updated
 
     def _unique_combos(self, pool: list[str], needed: int, level: int) -> list[list[str]]:
         rng = random.Random(self.seed + level)
-        candidates: list[tuple[str, ...]] = []
-        for size in (1, 2, 3):
-            candidates.extend(combinations(pool, size))
-        rng.shuffle(candidates)
+        if level <= 5:
+            singles = [(tag,) for tag in pool]
+            pairs = list(combinations(pool, 2))
+            rng.shuffle(pairs)
+            candidates = singles + pairs
+        else:
+            candidates: list[tuple[str, ...]] = []
+            for size in (1, 2, 3):
+                candidates.extend(combinations(pool, size))
+            rng.shuffle(candidates)
         if len(candidates) < needed:
             raise ValueError(f"Not enough unique tag combinations for level {level}")
         chosen = candidates[:needed]

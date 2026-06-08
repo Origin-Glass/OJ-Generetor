@@ -1,15 +1,15 @@
 llm:
   api_base: "http://127.0.0.1:8080/v1"
   api_key_env: "OPENAI_API_KEY"
-  model: "ojgen-qwen3-gguf"
+  model: "ojgen-qwen3-35b"
   temperature: 0.75
   top_p: 0.9
-  max_tokens: 8192
+  max_tokens: 4096
   timeout: 300
 
 generation:
   total_per_level: 33
-  bonus_levels: [22,23,24,25,26,27,28,29,30]
+  bonus_levels: []
   language: "ko"
   output_dir: "generated/problems"
   metadata_dir: "generated/metadata"
@@ -30,6 +30,7 @@ verification:
   run_timeout_sec: 3
   high_difficulty_run_timeout_sec: 8
   compare_reference_with_bruteforce: true
+  llm_review_min_level: 6
   effort_by_level:
     "1-5":
       random_tests: 30
@@ -40,27 +41,27 @@ verification:
       random_tests: 50
       llm_counterexample_tests: 10
       max_hidden_tests: 40
-      verifier_max_tokens: 6144
+      verifier_max_tokens: 4096
     "11-15":
       random_tests: 100
       llm_counterexample_tests: 20
       max_hidden_tests: 80
-      verifier_max_tokens: 8192
+      verifier_max_tokens: 4096
     "16-20":
       random_tests: 150
       llm_counterexample_tests: 30
       max_hidden_tests: 120
-      verifier_max_tokens: 10000
+      verifier_max_tokens: 4096
     "21-25":
       random_tests: 200
       llm_counterexample_tests: 40
       max_hidden_tests: 160
-      verifier_max_tokens: 12000
+      verifier_max_tokens: 4096
     "26-30":
       random_tests: 300
       llm_counterexample_tests: 60
       max_hidden_tests: 240
-      verifier_max_tokens: 16000
+      verifier_max_tokens: 4096
 
 similarity:
   enabled: true
@@ -72,9 +73,9 @@ similarity:
   sample_size: 50000
 
 git:
-  enabled: true
-  commit_each_problem: true
-  push_after_commit: true
+  enabled: false
+  commit_each_problem: false
+  push_after_commit: false
   remote: "origin"
   branch: "main"
   lock_ttl_minutes: 120

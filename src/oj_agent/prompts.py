@@ -45,14 +45,30 @@ Rules:
 - Match difficulty_level exactly: {slot.level}.
 - Match tier exactly: {slot.tier}.
 - Match tags exactly as the planned set: {slot.tags}.
+- Follow topic_hint exactly: {slot.topic_hint or "create a distinct idea for this slot"}.
+- Do not generate any problem whose title, core operation, input/output structure,
+  or intended solution matches avoid_topics: {slot.avoid_topics}.
+- For Bronze/low levels, simple is good, but do not repeat A+B / two-number sum
+  unless the topic_hint explicitly asks for it. Prefer varied input forms: comparison,
+  strings, unit conversion, counting, min/max, date/time, coordinate movement, parsing,
+  pattern printing, or tiny simulations.
 - is_bonus must be {str(slot.bonus).lower()}.
 - Do not copy BOJ, ICPC, Codeforces, AtCoder, or known problem ideas.
 - Use a fresh story and constraints that fit the algorithms.
 - Include at least one sample.
-- Include a complete C++17 reference solution.
-- Include a Python brute force solution if feasible; otherwise use an empty string only when genuinely impossible.
-- Include a Python hidden test generator that prints test inputs. Prefer JSON list output: [{{"input":"..."}}].
+- Include a complete C++17 reference solution. The code string must contain escaped newline characters (`\n`); do not write space-separated one-line C++.
+- Include a Python brute force solution if feasible; otherwise use an empty string only when genuinely impossible. Python code must contain escaped newline characters (`\n`).
+- Include a Python hidden test generator that prints test inputs. Prefer JSON list output: [{{"input":"..."}}]. Python code must contain escaped newline characters (`\n`); do not write one-line Python with spaces between statements.
 - Include SVG only when useful. If requires_diagram is true, diagram_svg must be complete valid SVG.
+- title, problem_statement, input_description, output_description, intended_solution,
+  correctness_argument, time_complexity, memory_complexity, reference_solution_cpp17,
+  and hidden_test_generator_python must be non-empty strings.
+- constraints must be a JSON array of Korean strings, not a single string and not null.
+- samples must include concrete input/output strings; include trailing newlines when appropriate.
+- brute_force_solution_python must be a complete executable Python 3 program that reads stdin
+  and prints exactly the same output as reference_solution_cpp17 for every valid input.
+- hidden_test_generator_python must be a complete executable Python 3 program that prints only
+  valid test inputs satisfying the stated constraints, preferably as a JSON list of {{"input": "..."}} objects.
 
 Required top-level fields:
 {json.dumps(JSON_SCHEMA_FIELDS, ensure_ascii=False)}
@@ -86,6 +102,7 @@ def counterexample_prompt(problem: GeneratedProblem, slot: TaskSlot, count: int)
 Generate {count} adversarial test ideas for this online judge problem.
 Target edge cases and algorithmic weaknesses: minimum values, maximum values, singleton, empty-like boundary if valid,
 disconnected graphs, duplicate values, sorted/reverse sorted, overflow stress, all equal, and impossible cases if relevant.
+Every concrete input must be valid under the problem's input format and constraints. Do not invent invalid inputs.
 Output valid JSON only:
 {{
   "tests": [
@@ -105,6 +122,11 @@ def revision_prompt(problem: GeneratedProblem, slot: TaskSlot, issues: list[str]
     return f"""
 Given the issues, revise the problem JSON.
 Preserve slot id, difficulty level, tier, bonus flag, and assigned tags.
+If the issues involve contradiction, ambiguous input format, sample mismatch, compile/runtime failure,
+or an overused low-level idea, you may rewrite the whole problem with a simpler fresh idea instead of
+patching the current story. Prioritize an unambiguous statement, samples that match the reference code,
+and an easily verifiable C++17 solution. Keep the assigned tags exactly.
+Follow topic_hint as guidance, and avoid these topics: {slot.avoid_topics}.
 Output valid JSON only with the same required fields as the generator.
 
 Slot:

@@ -68,8 +68,9 @@ class TaskPlanner:
                         bonus=True,
                     )
                 )
-        if len(slots) != 999:
-            raise ValueError(f"Expected 999 slots, got {len(slots)}")
+        expected = 30 * self.total_per_level + len(self.bonus_levels)
+        if len(slots) != expected:
+            raise ValueError(f"Expected {expected} slots, got {len(slots)}")
         return slots
 
 
